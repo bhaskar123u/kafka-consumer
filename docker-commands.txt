@@ -1,0 +1,4 @@
+1. Describe a consumer group :
+docker exec kafka-broker-1 /opt/kafka/bin/kafka-consumer-groups.sh --bootstrap-server broker-1:9092 --describe --group payment-service-group
+
+2.

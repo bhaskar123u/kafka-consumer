@@ -1,0 +1,235 @@
+When we start a kafka consumer application :
+                ┌──────────────────────────────┐
+                │     Spring Boot starts       │
+                └──────────────┬───────────────┘
+                               │
+                               ▼
+           ┌──────────────────────────────────────────────┐
+           │          Kafka Configuration Beans           │
+           │                                              │
+           │  ConsumerFactory(all props)                  │
+           │  ConcurrentKafkaListenerContainerFactory     │
+           └────────────────────┬─────────────────────────┘
+                                │
+                                │
+                    Spring finds @KafkaListener annotation
+                                │
+                 ┌──────────────┴───────────────┐
+                 │                              │
+                 ▼                              ▼
+        @KafkaListener #1               @KafkaListener #2
+                 │                              │
+                 ▼                              ▼
+      ContainerFactory creates        ContainerFactory creates
+      ListenerContainer #1            ListenerContainer #2
+                 │                              │
+                 ▼                              ▼
+         ConsumerFactory                ConsumerFactory
+                 │                              │
+                 ▼                              ▼
+         KafkaConsumer #1                KafkaConsumer #2
+                 │                              │
+                 ▼                              ▼
+            poll() loop                    poll() loop
+                 │                              │
+                 ▼                              ▼
+           Kafka Broker                   Kafka Broker
+                 │                              │
+                 ▼                              ▼
+         ConsumerRecords                ConsumerRecords
+                 │                              │
+                 ▼                              ▼
+         @KafkaListener #1               @KafkaListener #2
+         business code                   business code
+
+Q) Who does what?
+                        KafkaConsumer
+                             │ poll()
+                             ▼
+                     fetch ConsumerRecords
+                             │
+                             ▼
+                        ListenerContainer
+                             │ JsonDeserializer
+                             │ JSON bytes → Order object
+                             │ invoke listener
+                             ▼
+              @KafkaListener consume(Order order)
+                             │
+                             ▼
+                        Business Logic
+
+Key takeaways :
+1 ConcurrentKafkaListenerContainerFactory Bean
+       │
+       ├── creates OrderListenerContainer
+       │        └── creates N KafkaConsumer(s)
+       │             (N = concurrency)
+       │
+       └── creates PaymentListenerContainer
+                └── creates N KafkaConsumer(s)
+                     (N = concurrency)
+If concurrency = 1
+    → 1 ListenerContainer
+    → 1 KafkaConsumer
+If concurrency = 3
+    → 1 ListenerContainer
+    → 3 KafkaConsumer objects
+
+Order Listener
+     └── ListenerContainer
+          │
+          ├── KafkaConsumer #1 → Thread #1 → Partition 0
+          ├── KafkaConsumer #2 → Thread #2 → Partition 1
+          └── KafkaConsumer #3 → Thread #3 → Partition 2
+
+Now each thread initiates a fetchRequest from broker, below is the flow :
+            Consumer Thread #1
+                   │ FetchRequest
+                   │ "Give me records, up to these limits"
+                   ▼
+            Kafka Broker
+                   │ FetchResponse(contain data from all the partition consumer is responsible for)
+                   │ ┌─────────────────────────┐
+                   │ │ Record 1                │
+                   │ │ Record 2                │
+                   │ │ Record 3                │
+                   │ │ ...                     │
+                   │ │ Record N                │
+                   │ └─────────────────────────┘
+                   ▼
+            Consumer Thread #1
+                   │
+                   ▼
+            ConsumerRecords
+fetch.max.bytes(maximum data for the ENTIRE fetchResponse, limiting factor), max.partition.fetch.bytes(maximum data from EACH individual partition) and max.poll.records are used to control how much data a consumer wants from broker and how much data poll() returns to the application. Kafka can exceed fetch.max.bytes in some cases to return the first batch so the consumer can make progress. Assume fetch.max.bytes = 5 MB && max.partition.fetch.bytes = 10 MB, then
+
+            FetchResponse
+            ┌───────────────────────────────┐
+            │ Partition 1 → 2 MB(20 records)│
+            │ Partition 2 → 1.5MB(15)       │
+            │ Partition 3 → 1.5MB(12)       │
+            │                               │
+            │ TOTAL      → 5 MB(47)         │
+            └───────────────────────────────┘
+Suppose: max.poll.records = 10. Then the poll() call would return at most 10 records to the application, even though the FetchResponse contains 47 records. The remaining records stay buffered inside the consumer and are returned by subsequent poll() calls.
+
+What if the partition it is listening to has events of different type, then how will a single listenerContainer associated to a particular @KafkaListener send the records at correct places?
+- this is where the __TypeId__ concept becomes important
+
+Kafka Record
+            ┌─────────────────────────────────────┐
+            │ value: JSON                         │
+            │ __TypeId__: OrderCreated            │
+            └──────────────────┬──────────────────┘
+                               │
+                               ▼
+                    JsonDeserializer
+                               │
+                               │ reads __TypeId__
+                               ▼
+                    application.properties
+                    type mappings
+                               │
+                               │ "OrderCreated" → com.foo.OrderCreated
+                               ▼
+                         OrderCreated
+If you want multiple event types in one topic, you generally use one listener capable of handling the different types, with type information (or another routing mechanism) to determine the concrete object. We might configure like :
+spring.kafka.consumer.properties.spring.json.type.mapping= OrderCreated:com.example.events.OrderCreated,PaymentCompleted:com.example.events.PaymentCompleted
+and then the application code decides what will happen with this object.
+
+@KafkaListener(topics = "order-events")
+public void consume(Object event) {
+    if (event instanceof OrderCreated order) {
+        // OrderCreated business logic
+    }
+    else if (event instanceof PaymentCompleted payment) {
+        // PaymentCompleted business logic
+    }
+    else if (event instanceof OrderCancelled cancelled) {
+        // OrderCancelled business logic
+    }
+}
+
+max.poll.interval.ms && session.timeout.ms :
+max.poll.interval.ms → maximum allowed time between poll() calls before the consumer is considered to have failed its group membership
+session.timeout.ms → if heartbeats aren't received within this period, the Coordinator considers the consumer dead.
+
+During records processing if kafkaConsumer thread is busy and max.poll.interval.ms() expires, then the consumer is considered busy/failed and a re-balance is triggered
+                Consumer failure / join / leave
+                          ↓
+                Group Coordinator (Kafka Broker)
+                          ↓
+                      Rebalance
+                          ↓
+                Group Leader calculates assignment
+                          ↓
+                Consumers receive new partitions
+                          ↓
+                Consumers find their committed offsets
+                          ↓
+                Resume consuming
+
+
+
+Exception processing in kafka consumer :
+1. During de-serialization (poison pill)
+2. During processing a record
+
+                      ┌──────────────┐
+                      │ Kafka Broker │
+                      └──────┬───────┘
+                             │ poll()
+                             ▼
+                    ┌──────────────────┐
+                    │ ConsumerRecords  │
+                    └────────┬─────────┘
+                             │
+                             ▼
+                    ┌──────────────────────────┐
+                    │     Deserialization      │
+                    │                          │
+                    │   bytes → Java Object    │
+                    └────────┬─────────────────┘
+                             │ ❌ Poison Pill (malformed / invalid message)
+                             ▼
+                    ┌──────────────────────────┐
+                    │   Deserialization Error  │
+                    └────────┬─────────────────┘
+                             │ ❌ Listener NOT invoked
+                             ▼
+                    ┌──────────────────────────┐
+                    │     Error Handling       │
+                    │                          │
+                    │ Retry / Recover / DLT    │
+                    └──────────────────────────┘
+
+Poison Pill : One bad message can lead to this, the deserializer won't be able to deserialize this and the consumer thread will be stuck, even if we restart the consumer thread, similar thing will happen, as it will try to overcome it's lag. What can be done? We can create a logic to handle these exceptions.
+
+                    ┌──────────────────────────────┐
+                    │     Deserialization logic    │
+                    └──────────────┬───────────────┘
+                                   ▼
+                          ┌──────────────────┐
+                          │ Deserialization  │
+                          │    Exception?    │
+                          └───────┬──────────┘
+                         ┌────────┴────────┐
+                        YES                NO
+                         │                 │
+                         ▼                 ▼
+               ┌──────────────────┐   ┌─────────────────────────┐
+               │   ErrorHandler   │   │ For each record:        │
+               │     invoked      │   │ invoke listener and     │
+               │                  │   │ process the record      │
+               │ Default config:  │   └────────────┬────────────┘
+               │                  │                │
+               │ • 0 retries      │                │
+               │ • No DLT         │                │
+               │ • Error logging  │                │
+               └────────┬─────────┘                │
+                        └────────────┬─────────────┘
+                                     ▼
+                              ┌──────────────┐
+                              │ Commit Offset│
+                              └──────────────┘
