@@ -2,6 +2,7 @@ package com.bsharan.kafka_consumer.configs;
 
 import org.apache.kafka.clients.admin.NewTopic;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
+import org.apache.kafka.clients.consumer.RangeAssignor;
 import org.apache.kafka.common.serialization.ByteArrayDeserializer;
 import org.apache.kafka.common.serialization.StringDeserializer;
 import org.springframework.context.annotation.Bean;
@@ -40,19 +41,43 @@ public class KafkaConsumerConfig {
 
     @Bean
     public NewTopic orderDLT(){
-        return TopicBuilder.name("order-events-dlt").build(); // the DLT topic name should be : "topic-name-dlt"
+        return TopicBuilder.name("order-events-dlt").build(); // the DLT topic name should have suffix as "-dlt" : "topic-name-dlt"
     }
 
     @Bean
     public ConsumerFactory<String, byte[]> consumerFactory() {
         Map<String, Object> props = new HashMap<>();
         props.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, "localhost:9092");
+        // meta-data for cluster
+        props.put(ConsumerConfig.METADATA_MAX_AGE_CONFIG, 300000);
+        // how frequently the consumer sends heartbeat requests to the group coordinator
+        props.put(ConsumerConfig.HEARTBEAT_INTERVAL_MS_CONFIG, 3000);
+        // tells the Group Coordinator how long it can go without receiving heartbeats from a consumer before considering that consumer dead
+        props.put(ConsumerConfig.SESSION_TIMEOUT_MS_CONFIG, 60000);
+        // maximum allowed time between two successful poll() calls by a consumer, if fails kafka considers this to have stopped making progress and removes it from group, which trigger a rebalance
+        props.put(ConsumerConfig.MAX_POLL_INTERVAL_MS_CONFIG, 300000);
+        // KafkaConsumer automatically commits the offsets of records it has polled
+        props.put(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, true);
+        // how frequently the consumer automatically commits its current offset, if we want manual commit, this and above property should be tweaked
+        props.put(ConsumerConfig.AUTO_COMMIT_INTERVAL_MS_CONFIG, 5000);
         // Outer deserializer
         props.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, ErrorHandlingDeserializer.class);
         props.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, ErrorHandlingDeserializer.class);
         // Delegate deserializers, the outer handler needs an actual deserializers to delegate the task of deserialization
         props.put(ErrorHandlingDeserializer.KEY_DESERIALIZER_CLASS, StringDeserializer.class);
         props.put(ErrorHandlingDeserializer.VALUE_DESERIALIZER_CLASS, ByteArrayDeserializer.class);
+        // partition assignment strategies
+        props.put(ConsumerConfig.PARTITION_ASSIGNMENT_STRATEGY_CONFIG, RangeAssignor.class.getName());
+        // how long the broker is allowed to wait before returning a FetchResponse when there isn't enough data available immediately
+        props.put(ConsumerConfig.FETCH_MAX_WAIT_MS_CONFIG, 500);
+        // how many records the consumer returns to your application in one poll() call, a record-count limit, not a byte-size limit
+        props.put(ConsumerConfig.MAX_POLL_RECORDS_CONFIG, 500);
+        // minimum amount of data the broker SHOULD TRY TO accumulate before returning a FetchResponse
+        props.put(ConsumerConfig.FETCH_MIN_BYTES_CONFIG, 1 * 1024 * 1024);
+        // Maximum amount of data the consumer tries to fetch from one partition in a fetch response
+        props.put(ConsumerConfig.MAX_PARTITION_FETCH_BYTES_CONFIG, 1 * 1024 * 1024);
+        // Maximum amount of data the consumer tries to receive in the entire fetchResponse, across all partitions
+        props.put(ConsumerConfig.FETCH_MAX_BYTES_CONFIG, 10 * 1024 * 1024);
         return new DefaultKafkaConsumerFactory<>(props);
     }
 

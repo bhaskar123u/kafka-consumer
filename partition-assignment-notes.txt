@@ -1,0 +1,182 @@
+1. What happens when we start a consumer?
+                                APPLICATION STARTS
+                                       │
+                                       ▼
+                          ┌─────────────────────────┐
+                          │ Create KafkaConsumer    │
+                          │                         │
+                          │ bootstrap.servers       │
+                          │ group.id                │
+                          │ deserializers           │
+                          └────────────┬────────────┘
+                                       │
+                                       │ subscribe()
+                                       ▼
+                          ┌─────────────────────────┐
+                          │ KafkaConsumer           │
+                          │                         │
+                          │ Subscription:           │
+                          │ order-events            │
+                          └────────────┬────────────┘
+                                       │
+                                       │ Find Group Coordinator
+                                       ▼
+                          ┌─────────────────────────┐
+                          │ Group Coordinator       │
+                          │                         │
+                          │ Kafka Broker            │
+                          └────────────┬────────────┘
+                                       │
+                                       │ JoinGroup request
+                                       ▼
+                          ┌─────────────────────────┐
+                          │ Consumer Group          │
+                          │                         │
+                          │ payment-service-group   │
+                          └────────────┬────────────┘
+                                       │
+                                       │ Group members
+                                       │ + subscriptions
+                                       ▼
+                          ┌─────────────────────────┐
+                          │ Partition Assignment    │
+                          │                         │
+                          │ Which consumer gets     │
+                          │ which partition?        │
+                          └────────────┬────────────┘
+                                       │
+                                       │ SyncGroup
+                                       ▼
+                          ┌─────────────────────────┐
+                          │ KafkaConsumer           │
+                          │                         │
+                          │ Assigned:               │
+                          │ order-events-0          │
+                          │ order-events-2          │
+                          └────────────┬────────────┘
+                                       │ asks till which offset consumers have already read if present if not it check what is the auto-offset-reset being configured for
+                                       │ poll()
+                                       ▼
+                          ┌─────────────────────────┐
+                          │ Kafka Broker            │
+                          │                         │
+                          │ order-events            │
+                          │                         │
+                          │ P0   P1   P2            │
+                          │ │         │             │
+                          │ └─────────┘             │
+                          │   assigned              │
+                          │   to consumer           │
+                          └─────────────────────────┘
+
+2. What are few of the partition assignment strategies?
+Kafka Partition Assignment Strategies:
+--------------------------------------
+Classic Consumer Group Protocol:
+- RangeAssignor
+            1. Partitions are sorted.
+            2. Consumers subscribed to that topic are sorted.
+            3. Partitions are divided into contiguous ranges.
+            4. Each consumer receives one range.
+
+            e.g., Topic: order-events
+
+            Partitions:
+            P0 P1 P2 P3 P4 P5
+
+            Consumers:
+            C1 C2 C3
+
+            Possible assignment:
+
+            C1 -> P0 P1
+            C2 -> P2 P3
+            C3 -> P4 P5
+
+            Important characteristic: RangeAssignor works topic-by-topic. This becomes important when consumers subscribe to multiple topics.
+- RoundRobinAssignor
+            It tries to distribute partitions evenly in a round-robin fashion.
+
+            e.g., Partitions:
+            P0 P1 P2 P3 P4 P5
+
+            Consumers:
+            C1 C2 C3
+
+            Assignment:
+
+            P0 -> C1
+            P1 -> C2
+            P2 -> C3
+            P3 -> C1
+            P4 -> C2
+            P5 -> C3
+
+            Result:
+
+            C1 -> P0 P3
+            C2 -> P1 P4
+            C3 -> P2 P5
+
+            Important characteristic: RoundRobin considers the eligible partitions across the subscribed
+            topics and distributes them in round-robin order.
+- StickyAssignor
+            It has two goals:
+
+            1. Keep the assignment balanced.
+            2. Keep existing assignments whenever possible.
+
+            The second goal is the important difference.
+
+            Example before rebalance:
+
+            C1 -> P0 P1
+            C2 -> P2 P3
+
+            Suppose a new consumer C3 joins.
+
+            StickyAssignor tries to avoid moving more partitions than necessary while
+            still producing a balanced assignment. The exact assignment depends on the group membership and subscriptions.
+
+            Key idea:
+
+                Balanced assignment
+                        +
+                Minimum unnecessary movement
+- CooperativeStickyAssignor
+            It combines the sticky assignment idea with
+            cooperative rebalancing. Rest all are eager rebalance, means they stop reading at the time of rebalance until new partitions are assigned.
+
+            Sticky:
+                Try to preserve existing assignments.
+
+            Cooperative:
+                Move only the partitions that actually need to move instead of
+                revoking everything at once. Tries to make sure consumers still hold the same partition which they were holding earlier. Reading is not completely stopped.
+
+            Traditional eager rebalance:
+
+                        Existing assignment
+                                |
+                                v
+                        All partitions revoked
+                                |
+                                v
+                        New assignment calculated
+                                |
+                                v
+                        Partitions assigned again
+
+            Cooperative rebalance:
+
+                        Existing assignment
+                                |
+                                v
+                        Only required partitions are moved
+                                |
+                                v
+                        New assignment
+                                |
+                                v
+                        Consumers continue processing unaffected partitions
+            This reduces disruption during rebalances.

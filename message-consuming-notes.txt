@@ -184,7 +184,7 @@ During records processing if kafkaConsumer thread is busy and max.poll.interval.
                           ↓
                 Resume consuming
 
-
+Now assume the producer has these records [0,1,2,3,4,....,100,101,102,....,149,150,151...] and consumer asker for 50 records. Now consumer processed it and when it was going to commit in __consumer_offsets then some error happened. When the consumer thread start polling again, it will fetch from 150 only. This is because locally it knows it has processed those records. Now assume consumer node crashed, what happens then? Kafka has no idea to know until which point the records where processed. Hence, it will start fetching from 100 as on __consumer_offsets the last known committed offset for this is 100.
 
 Exception processing in kafka consumer :
 1. During de-serialization (poison pill)
