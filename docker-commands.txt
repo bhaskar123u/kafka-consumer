@@ -1,4 +1,7 @@
 1. Describe a consumer group :
 docker exec kafka-broker-1 /opt/kafka/bin/kafka-consumer-groups.sh --bootstrap-server broker-1:9092 --describe --group payment-service-group
 
-2.
+2. Check storage for a topic :
+for specific topic - docker exec kafka-broker-1 sh -c 'du -sh /tmp/kafka-logs/order-events-*'
+to see all partitions of a topic on that broker - docker exec kafka-broker-1 sh -c 'du -sh /tmp/kafka-logs/order-events-*'
+total size of a topic on a broker - docker exec kafka-broker-1 sh -c 'du -sk /tmp/kafka-logs/order-events-* | awk "{sum+=\$1} END {printf \"%.2f MB\n\", sum/1024}"'
