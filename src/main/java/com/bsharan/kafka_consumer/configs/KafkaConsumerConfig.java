@@ -11,11 +11,17 @@ import org.springframework.kafka.core.ConsumerFactory;
 import org.springframework.kafka.core.DefaultKafkaConsumerFactory;
 import org.springframework.kafka.config.TopicBuilder;
 import org.apache.kafka.common.config.TopicConfig;
+import org.springframework.kafka.core.KafkaTemplate;
+import org.springframework.kafka.listener.DeadLetterPublishingRecoverer;
 import org.springframework.kafka.listener.DefaultErrorHandler;
+import org.springframework.kafka.support.ExponentialBackOffWithMaxRetries;
 import org.springframework.kafka.support.converter.JacksonJsonMessageConverter;
 import org.springframework.kafka.support.converter.RecordMessageConverter;
+import org.springframework.kafka.support.serializer.ErrorHandlingDeserializer;
+import org.springframework.util.backoff.ExponentialBackOff;
 import org.springframework.util.backoff.FixedBackOff;
 
+import java.util.HashMap;
 import java.util.Map;
 
 @Configuration
@@ -33,12 +39,21 @@ public class KafkaConsumerConfig {
     }
 
     @Bean
+    public NewTopic orderDLT(){
+        return TopicBuilder.name("order-events-dlt").build(); // the DLT topic name should be : "topic-name-dlt"
+    }
+
+    @Bean
     public ConsumerFactory<String, byte[]> consumerFactory() {
-        return new DefaultKafkaConsumerFactory<>(
-                Map.of(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, "localhost:9092"),
-                new StringDeserializer(),
-                new ByteArrayDeserializer()
-        );
+        Map<String, Object> props = new HashMap<>();
+        props.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, "localhost:9092");
+        // Outer deserializer
+        props.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, ErrorHandlingDeserializer.class);
+        props.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, ErrorHandlingDeserializer.class);
+        // Delegate deserializers, the outer handler needs an actual deserializers to delegate the task of deserialization
+        props.put(ErrorHandlingDeserializer.KEY_DESERIALIZER_CLASS, StringDeserializer.class);
+        props.put(ErrorHandlingDeserializer.VALUE_DESERIALIZER_CLASS, ByteArrayDeserializer.class);
+        return new DefaultKafkaConsumerFactory<>(props);
     }
 
     /*
@@ -46,30 +61,48 @@ public class KafkaConsumerConfig {
     */
     @Bean
     public ConcurrentKafkaListenerContainerFactory<String, byte[]>
-    kafkaListenerContainerFactory(ConsumerFactory<String, byte[]> consumerFactory) {
+    kafkaListenerContainerFactory(ConsumerFactory<String, byte[]> consumerFactory, DefaultErrorHandler errorHandler) {
         ConcurrentKafkaListenerContainerFactory<String, byte[]> factory =
                 new ConcurrentKafkaListenerContainerFactory<>();
         // when spring will eventually create a ListenerContainer, it will use this ConsumerFactory to create the actual KafkaConsumer
         factory.setConsumerFactory(consumerFactory);
         // When the KafkaConsumer gives a record, it will use this converter to convert the payload before calling @KafkaListener
         factory.setRecordMessageConverter(kafkaMessageConverter());
-        factory.setCommonErrorHandler(errorHandler());
+        factory.setCommonErrorHandler(errorHandler);
         return factory;
     }
+
 //    Jackson itself doesn't know from the bytes alone whether they represent Order or PaymentStatus.The listener method's parameter type tells Spring what the target type is. For example:
 //    @KafkaListener(topics = "order-events")
 //    public void consume(Order order) {}
 //    tells Jackson to convert into Order object
-
     @Bean
     public RecordMessageConverter kafkaMessageConverter() {
         return new JacksonJsonMessageConverter();
     }
 
     @Bean
-    public DefaultErrorHandler errorHandler() {
-        return new DefaultErrorHandler(new FixedBackOff(1000L, 2));
+    public DeadLetterPublishingRecoverer orderDLTRecoverer(KafkaTemplate<Object, Object> template){
+        return new DeadLetterPublishingRecoverer(template);
     }
+
+    // Bean name - errorHandler, bean type - DefaultErrorHandler
+    // By default, also this bean is created but the interval is 0, maxAttempts is also 0, so we have to create this bean with required configuration. FixedBackOff, ExponentialBackOff.
+    @Bean
+    public DefaultErrorHandler errorHandler(DeadLetterPublishingRecoverer recoverer) {
+        return new DefaultErrorHandler(recoverer, new FixedBackOff(1000L, 2));
+    }
+
+//    @Bean
+//    public DefaultErrorHandler errorHandler() {
+//        ExponentialBackOffWithMaxRetries backOff = new ExponentialBackOffWithMaxRetries(10);
+//        backOff.setInitialInterval(1000L);
+////        1s, 2s, 4s, 8s, 10s, 10s, 10s,...
+//        backOff.setMultiplier(2.0);
+//        backOff.setMaxInterval(10000L);
+//        DefaultErrorHandler handler = new DefaultErrorHandler(backOff);
+//        return handler;
+//    }
 }
 
 //     ConcurrentKafkaListenerContainerFactory

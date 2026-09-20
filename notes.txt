@@ -2,17 +2,15 @@ When we start a kafka consumer application :
                 ┌──────────────────────────────┐
                 │     Spring Boot starts       │
                 └──────────────┬───────────────┘
-                               │
                                ▼
            ┌──────────────────────────────────────────────┐
            │          Kafka Configuration Beans           │
            │                                              │
-           │  ConsumerFactory(all props)                  │
+           │  ConsumerFactory(has all props)              │
            │  ConcurrentKafkaListenerContainerFactory     │
            └────────────────────┬─────────────────────────┘
                                 │
-                                │
-                    Spring finds @KafkaListener annotation
+              Spring finds @KafkaListener annotation
                                 │
                  ┌──────────────┴───────────────┐
                  │                              │
@@ -21,26 +19,43 @@ When we start a kafka consumer application :
                  │                              │
                  ▼                              ▼
       ContainerFactory creates        ContainerFactory creates
-      ListenerContainer #1            ListenerContainer #2
-                 │                              │
-                 ▼                              ▼
-         ConsumerFactory                ConsumerFactory
-                 │                              │
-                 ▼                              ▼
-         KafkaConsumer #1                KafkaConsumer #2
-                 │                              │
-                 ▼                              ▼
-            poll() loop                    poll() loop
-                 │                              │
-                 ▼                              ▼
-           Kafka Broker                   Kafka Broker
-                 │                              │
-                 ▼                              ▼
-         ConsumerRecords                ConsumerRecords
-                 │                              │
-                 ▼                              ▼
-         @KafkaListener #1               @KafkaListener #2
-         business code                   business code
+      ListenerContainer #1                ListenerContainer #2
+              │                                        │
+              │ (using ConsumerFactory)                │ (using ConsumerFactory)
+              ▼                                        ▼
+       KafkaConsumer #1                         KafkaConsumer #2
+              │ poll()                                 │ poll()
+              │                                        │
+              ▼                                        ▼
+     ┌─────────────────┐                      ┌─────────────────┐
+     │  FetchRequest   │                      │  FetchRequest   │
+     │  order-events   │                      │ order-payments  │
+     └────────┬────────┘                      └────────┬────────┘
+              │                                        │
+              └──────────────────┬─────────────────────┘
+                                 │ (connects to)
+                                 ▼
+                      ┌─────────────────────┐
+                      │   <Kafka Cluster>   │
+                      │  order-events       │
+                      │  order-payments     │
+                      └──────────┬──────────┘
+              ┌──────────────────┴──────────────────┐
+              ▼                                     ▼
+     ┌─────────────────┐                   ┌─────────────────┐
+     │  FetchResponse  │                   │  FetchResponse  │
+     │  records from   │                   │  records from   │
+     │  order-events   │                   │ order-payments  │
+     └────────┬────────┘                   └────────┬────────┘
+              │                                     │
+              ▼                                     ▼
+     ConsumerRecords #1                     ConsumerRecords #2
+              │                                     │
+              ▼                                     ▼
+     ListenerContainer #1                   ListenerContainer #2
+              │                                     │
+              ▼                                     ▼
+       consume(Order)                    consume(PaymentStatus)
 
 Q) Who does what?
                         KafkaConsumer
@@ -76,12 +91,11 @@ If concurrency = 3
     → 1 ListenerContainer
     → 3 KafkaConsumer objects
 
-Order Listener
-     └── ListenerContainer
-          │
-          ├── KafkaConsumer #1 → Thread #1 → Partition 0
-          ├── KafkaConsumer #2 → Thread #2 → Partition 1
-          └── KafkaConsumer #3 → Thread #3 → Partition 2
+OrderListenerContainer
+      │ (creates)
+      ├── KafkaConsumer #1 → Thread #1 → Partition 0
+      ├── KafkaConsumer #2 → Thread #2 → Partition 1
+      └── KafkaConsumer #3 → Thread #3 → Partition 2
 
 Now each thread initiates a fetchRequest from broker, below is the flow :
             Consumer Thread #1
@@ -114,7 +128,7 @@ fetch.max.bytes(maximum data for the ENTIRE fetchResponse, limiting factor), max
             └───────────────────────────────┘
 Suppose: max.poll.records = 10. Then the poll() call would return at most 10 records to the application, even though the FetchResponse contains 47 records. The remaining records stay buffered inside the consumer and are returned by subsequent poll() calls.
 
-What if the partition it is listening to has events of different type, then how will a single listenerContainer associated to a particular @KafkaListener send the records at correct places?
+What if the partition is listening to has events of different type, then how will a single listenerContainer associated to a particular @KafkaListener send the records at correct places?
 - this is where the __TypeId__ concept becomes important
 
 Kafka Record
@@ -204,7 +218,7 @@ Exception processing in kafka consumer :
                     │ Retry / Recover / DLT    │
                     └──────────────────────────┘
 
-Poison Pill : One bad message can lead to this, the deserializer won't be able to deserialize this and the consumer thread will be stuck, even if we restart the consumer thread, similar thing will happen, as it will try to overcome it's lag. What can be done? We can create a logic to handle these exceptions.
+Poison Pill : One bad message can lead to this, the deserializer won't be able to deserialize this and the consumer thread will be stuck in infinite loop, even if we restart the consumer thread, again the consumer will read the last processed offset, and it will try to work on messages which was not processed yet -> leading to infinite loop. What can be done? We can create a logic to handle these exceptions.
 
                     ┌──────────────────────────────┐
                     │     Deserialization logic    │
@@ -233,3 +247,119 @@ Poison Pill : One bad message can lead to this, the deserializer won't be able t
                               ┌──────────────┐
                               │ Commit Offset│
                               └──────────────┘
+The actual chain is :
+                                    Kafka Broker
+                                       │ value = raw bytes[]
+                                       ▼
+    ┌─────────────────────────────────────────────────────────────────────────────────────────────┐
+    │ ErrorHandlingDeserializer(outer wrapper)                                                    │
+    │ props.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, ErrorHandlingDeserializer.class);   │
+    │ props.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, ErrorHandlingDeserializer.class); │
+    └──────────────────────────────────┬──────────────────────────────────────────────────────────┘
+                                       │ delegates
+                                       ▼
+                        ┌────────────────────────────────────────────────┐
+                        │   StringDeserializer && ByteArrayDeserializer  │
+                        └──────────────┬─────────────────────────────────┘
+                                       │ result
+                                       ▼
+                                     byte[]
+                                       │
+                                       ▼
+                              Listener Container
+                                       │ JacksonJsonMessageConverter
+                                       ▼
+                              Order / PaymentStatus
+                                       │
+                                       ▼
+                             consume(Order order)
+Now if any exception happens, it log it, if configured it will store the result in DLT(dead-letter-topic) and then will commit the offset. In prod env, we need to explicitly add the event in a DLT(it's not done by default) and do a retry. If we only configure the retry it will try all the attempts, if not succeeded, in the end it will log and commit the offset. If we want some database operation/add to DLT or anything like that, we need to configure a Recoverer. We can use the functional interface - ConsumerRecordRecoverer.
+
+How does a message goes into DLT?
+When a deserialization exception happens, ErrorHandlingDeserializer catches the exception thrown by the delegate deserializer and internally creates a DeserializationException object containing details about the exception and the failed key/value. It then creates/returns a ConsumerRecord where the failed key or value is represented appropriately, and the DeserializationException information is stored in the record headers along with the raw bytes that caused the failure. This record is then passed through Spring Kafka's error-handling flow to the configured DefaultErrorHandler. The DefaultErrorHandler applies the configured retry policy. For example, with:
+
+            new FixedBackOff(1000L, 2)
+
+the failed record is retried 2 times, with a 1-second interval between attempts. If all retries are exhausted, the DefaultErrorHandler invokes the configured DeadLetterPublishingRecoverer. The DeadLetterPublishingRecoverer then publishes the failed ConsumerRecord to a dead-
+
+Issue with DeadLetterPublishingRecoverer :
+Assume the key deserialisation failed then value will be an object(assume order), if the key passed and value failed then value will be still a byte array. Now when writing in -dlt topic, it would need serializer, it can be either of JsonSerializer of byteArraySerializer at a time but not both right? How can we make sure proper serialisation happens?
+That's why Spring Kafka supports configuring multiple KafkaTemplates for DeadLetterPublishingRecoverer, with the recoverer selecting the appropriate template based on the value type. For example:
+
+            Map<Class<?>, KafkaTemplate<?, ?>> templates = new LinkedHashMap<>();
+
+            templates.put(Order.class, orderKafkaTemplate);
+            templates.put(byte[].class, byteArrayKafkaTemplate);
+
+            return new DeadLetterPublishingRecoverer(templates);
+
+In the both-failed case, neither side is an Order or String anymore. Both are raw bytes:
+
+            key   → byte[]
+            value → byte[]
+
+So the DLT producer can use:
+ByteArraySerializer
+       │
+       ├── key   byte[] → bytes
+       └── value byte[] → bytes
+
+What if you want to set up and alert or add data in DB when exception happens?
+@Bean
+public DefaultErrorHandler errorHandler(DeadLetterPublishingRecoverer recoverer) {
+    return new DefaultErrorHandler((record, exception)->{
+        // business logic for doing custom action
+    }, new FixedBackOff(1000L, 2));
+}
+
+What is exception happens while processing a record?
+A processing exception occurs when a Kafka record has been successfully fetched from the broker and successfully deserialized, but an exception occurs while the @KafkaListener method or the business logic invoked by it is executing. At this point, the listener has already received a valid Java object such as Order. For example, if consume(Order order) calls paymentProcessorService.process(order) and that method throws a RuntimeException, the exception is propagated back to the Spring Kafka listener container. The listener container catches the exception and passes it to the configured DefaultErrorHandler. The flow is:
+            Kafka Broker
+            ↓
+            KafkaConsumer.poll()
+            ↓
+            ConsumerRecord
+            ↓
+            Deserialization
+            ↓
+            Order object
+            ↓
+            @KafkaListener
+            ↓
+            Business Logic
+            ↓
+            ❌ Exception
+            ↓
+            Listener Container
+            ↓
+            DefaultErrorHandler
+
+Unlike a deserialization exception, the listener method is invoked in this case because deserialization was successful. Therefore, the ConsumerRecord already contains the successfully deserialized key and value. For example, it may contain String as the key and Order as the value. The DefaultErrorHandler is responsible for deciding what to do with the failed record. In our configuration, we have:
+
+            new DefaultErrorHandler(recoverer,new FixedBackOff(1000L, 2));
+
+FixedBackOff(1000L, 2) means that Spring waits for 1 second between retries and performs 2 retries after the initial failed processing attempt. Therefore, the same record can be processed a maximum of 3 times: the initial attempt, retry #1, and retry #2. If the record continues to fail after all retries are exhausted, the DefaultErrorHandler invokes the configured DeadLetterPublishingRecoverer. The recoverer publishes the failed record to the configured Dead Letter Topic (DLT), for example order-events-dlt.
+
+            Initial processing
+            ↓
+            FAIL
+            ↓
+            wait 1 sec
+            ↓
+            Retry #1
+            ↓
+            FAIL
+            ↓
+            wait 1 sec
+            ↓
+            Retry #2
+            ↓
+            FAIL
+            ↓
+            DefaultErrorHandler
+            ↓
+            DeadLetterPublishingRecoverer
+            ↓
+            order-events-dlt
+
+The important difference between the two failure scenarios is that a deserialization exception occurs before the listener is invoked, whereas a processing exception occurs after the listener has received the successfully deserialized object. In the processing-exception case, if the record is eventually recovered and sent to the DLT, the failed record is handled by the DeadLetterPublishingRecoverer. Once the record has been successfully recovered, the error handler can consider the failed record handled, allowing the consumer to move forward and process subsequent records according to the configured acknowledgment and offset-commit behavior.
