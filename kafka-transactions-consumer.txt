@@ -1,0 +1,128 @@
+1. How a consumer identifies a transaction in ONGOING/COMMIT?FAILED state?
+ - LSO (last stable offset) : offset of 1st message that belonged to OPEN transaction.
+
+2. How does a transactional event is different from a normal event?
+            OFFSET
+              │
+              ▼
+            ┌────────┬─────────────────────────────────────┐
+            │   0    │ Order-101                           │
+            │        │                                     │
+            │        │ key       = order-101               │
+            │        │ value     = {"orderId":"101",...}   │
+            │        │                                     │
+            │        │ producerId       = 5                │
+            │        │ producerEpoch    = 0                │
+            │        │ isTransactional = false             │
+            └────────┴─────────────────────────────────────┘
+vs
+            ┌────────┬─────────────────────────────────────┐
+            │   1    │ Order-102 (transactional record)    │
+            │        │ key       = order-102               │
+            │        │ value     = {"orderId":"102",...}   │
+            │        │                                     │
+            │        │ producerId       = 5                │
+            │        │ producerEpoch    = 0                │
+            │        │ isTransactional = true              │
+            │        │ isControl       = false             │
+            └────────┴─────────────────────────────────────┘
+vs
+            ┌────────┬─────────────────────────────────────┐
+            │   2    │ CONTROL RECORD (never returned to   │
+            │        │ application)                        │
+            │        │ producerId       = 5                │
+            │        │ producerEpoch    = 0                │
+            │        │ isTransactional = true              │
+            │        │ isControl       = true              │
+            │        │ marker          = COMMIT            │
+            └────────┴─────────────────────────────────────┘
+Now assume we have this sequence of events received from broker and is present with KafkaConsumer
+            Offset 100 → NE1
+            Offset 101 → NE2
+            Offset 102 → TE1
+            Offset 103 → NE3
+            Offset 104 → TE2
+            Offset 105 → TE3
+            Offset 106 → NE4
+            Offset 107 → NE5    ← assume until this record the event had arrived in 1 batch
+            ...
+            ...
+            Offset 116 → NE(x)
+            Offset 117 → CM(COMMIT)
+In this case it's only safe until 101 to send to consumer. from 102, consumer is not sure if it will be committed or aborted, hence it waits until it gets a control record and the records from 102...116 all are stored in consumer buffer until then. Offset 102 is called LSO. Hence,
+            Offset 100 → NE1
+            Offset 101 → NE2
+            Offset 102 → TE1   ← 1st event that belong to a OPEN transaction
+            Offset 103 → NE3
+            Offset 104 → TE2
+            Offset 105 → TE3
+            Offset 106 → NE4
+            Offset 107 → NE5    ← assume until this record the event had arrived in 1 batch
+            ...
+            ...
+            Offset 116 → NE(x)
+            Offset 117 → CM(COMMIT)
+
+3. At consumer end, we have a property 'spring.kafka.consumer.properties.isolation.level'. This property can be read_committed / read_uncommitted. Using this only the consumer can decide what records it needs to send to the application.
+
+4. Broker maintains an abort file, something like - 00000000000000000000.txnindex, this is useful for every transaction that is ABORTED. For each aborted transaction it stores : <PID, EpochId, 1st offset index, last offset index(control record index), lso> and send to consumer when needed. Consumer uses these information to process transactions received in fetchResponse.
+
+EOS (Exactly One Semantics) :
+It is achieved through Read -> Process -> [Write -> Commit offset] tied together. In simple terms write and commit offset is made an atomic operation.
+[read_committed + idempotency + transaction]
+                @KafkaListener
+                      │
+                      │ record offset = 50
+                      ▼
+                executeInTransaction()
+                      │
+                      ▼
+                BEGIN T1
+                      │
+                      ├── process record
+                      │
+                      ├── ops.send(...)
+                      │       │
+                      │       └── payment-events
+                      │
+                      ├── ops.sendOffsetsToTransaction(...)
+                      │       │
+                      │       └── __consumer_offsets → 51
+                      │
+                      ▼
+                COMMIT T1
+e.g.,
+                @KafkaListener(topics = "order-events")
+                public void process(ConsumerRecord<String, Object> record) {
+
+                    kafkaTemplate.executeInTransaction(ops -> {
+
+                        // 1. READ
+                        String key = record.key();
+                        Object value = record.value();
+
+                        // 2. PROCESS
+                        Object result = process(value);
+
+                        // 3. WRITE
+                        ops.send("payment-events", key, result);
+
+                        // 4. ADD CONSUMER OFFSET TO SAME TRANSACTION
+                        Map<TopicPartition, OffsetAndMetadata> offsets = new HashMap<>();
+
+                        offsets.put(
+                            new TopicPartition(
+                                record.topic(),
+                                record.partition()
+                            ),
+                            new OffsetAndMetadata(record.offset() + 1)
+                        );
+
+                        ops.sendOffsetsToTransaction(
+                            offsets,
+                            "order-group"
+                        );
+
+                        return null;
+                    });
+                }
