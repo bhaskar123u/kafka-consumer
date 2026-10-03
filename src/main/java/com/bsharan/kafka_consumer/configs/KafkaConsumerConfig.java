@@ -89,21 +89,33 @@ public class KafkaConsumerConfig {
     kafkaListenerContainerFactory(ConsumerFactory<String, byte[]> consumerFactory, DefaultErrorHandler errorHandler) {
         ConcurrentKafkaListenerContainerFactory<String, byte[]> factory =
                 new ConcurrentKafkaListenerContainerFactory<>();
-        // when spring will eventually create a ListenerContainer, it will use this ConsumerFactory to create the actual KafkaConsumer
+        // when spring will eventually create a listenerContainer, it will use this consumerFactory to create the actual kafkaConsumer and those kafkaConsumers will have properties from consumerFactory like the deserializer it wants to use
         factory.setConsumerFactory(consumerFactory);
-        // When the KafkaConsumer gives a record, it will use this converter to convert the payload before calling @KafkaListener
+        // When the kafkaConsumer gives a record, it will use this converter to convert the payload before calling @KafkaListener
         factory.setRecordMessageConverter(kafkaMessageConverter());
         factory.setCommonErrorHandler(errorHandler);
         return factory;
     }
-
-//    Jackson itself doesn't know from the bytes alone whether they represent Order or PaymentStatus.The listener method's parameter type tells Spring what the target type is. For example:
-//    @KafkaListener(topics = "order-events")
-//    public void consume(Order order) {}
-//    tells Jackson to convert into Order object
+    /*
+    Jackson itself doesn't know from the bytes alone whether they represent Order or PaymentStatus.The listener method's parameter type tells Spring what the target type is. For example:
+    @KafkaListener(topics = "order-events")
+    public void consume(Order order) {} tells Jackson to convert into Order object. RecordMessageConverter is a Spring Kafka adapter that converts a Kafka ConsumerRecord<String, byte[]> into the Message<?> e.g., Message<Order> that Spring's listener infrastructure works with. This is passed to @KafkaListener consume method.
+    Message<Order>
+        ├── payload  → Order
+        └── headers
+             ├── kafka_topic
+             ├── kafka_partition
+             ├── kafka_offset
+             └── ...
+        these headers are derived from consumerRecord which already contains (topic, partition, offset, key, value, headers, timestamp)
+        RecordMessageConverter       ← interface / contract
+                ▲
+                │
+        JacksonJsonMessageConverter  ← implementation
+     */
     @Bean
     public RecordMessageConverter kafkaMessageConverter() {
-        return new JacksonJsonMessageConverter();
+        return new JacksonJsonMessageConverter(); // uses ObjectMapper internally
     }
 
     @Bean

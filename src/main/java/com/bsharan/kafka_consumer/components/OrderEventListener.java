@@ -14,6 +14,7 @@ public class OrderEventListener {
         this.paymentProcessorService = paymentProcessorService;
     }
 
+    // containerFactory is needed here is we have multiple types of kafkaConsumers
     @KafkaListener(
             topics = "order-events",
             groupId = "payment-service-group",

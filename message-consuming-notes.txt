@@ -75,6 +75,26 @@ Q) Who does what?
                         Business Logic
 
 Key takeaways :
+
+ConsumerFactory
+    └── How to create KafkaConsumer
+        ├── bootstrap servers
+        ├── key deserializer
+        ├── value deserializer
+        ├── group.id
+        └── other Kafka consumer properties etc.
+This helps in creating the actual KafkaConsumer
+
+ContainerFactory
+    └── How to create ListenerContainer(runtime engine that continuously manages the consumer loop)
+        ├── ConsumerFactory
+        ├── concurrency
+        ├── acknowledgment mode
+        ├── error handler
+        ├── retry behavior
+        ├── DLT/recovery
+        └── other Spring Kafka listener settings
+
 1 ConcurrentKafkaListenerContainerFactory Bean
        │
        ├── creates OrderListenerContainer
