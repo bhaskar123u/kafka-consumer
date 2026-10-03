@@ -117,97 +117,100 @@ public class KafkaConsumerConfig {
     public DefaultErrorHandler errorHandler(DeadLetterPublishingRecoverer recoverer) {
         return new DefaultErrorHandler(recoverer, new FixedBackOff(1000L, 2));
     }
-
-//    @Bean
-//    public DefaultErrorHandler errorHandler() {
-//        ExponentialBackOffWithMaxRetries backOff = new ExponentialBackOffWithMaxRetries(10);
-//        backOff.setInitialInterval(1000L);
-////        1s, 2s, 4s, 8s, 10s, 10s, 10s,...
-//        backOff.setMultiplier(2.0);
-//        backOff.setMaxInterval(10000L);
-//        DefaultErrorHandler handler = new DefaultErrorHandler(backOff);
-//        return handler;
-//    }
+    /*
+    @Bean
+    public DefaultErrorHandler errorHandler() {
+        ExponentialBackOffWithMaxRetries backOff = new ExponentialBackOffWithMaxRetries(10);
+        backOff.setInitialInterval(1000L);
+        // 1s, 2s, 4s, 8s, 10s, 10s, 10s,...
+        backOff.setMultiplier(2.0);
+        backOff.setMaxInterval(10000L);
+        DefaultErrorHandler handler = new DefaultErrorHandler(backOff);
+        return handler;
+    }*/
 }
 
-//     ConcurrentKafkaListenerContainerFactory
-//             │ creates
-//             ▼
-//     ListenerContainer
-//             │
-//             │ asks ConsumerFactory to create Consumer
-//             ▼
-//     ConsumerFactory<String, byte[]>
-//             │
-//             │ provides KafkaConsumer configuration
-//             ▼
-//     KafkaConsumer<String, byte[]>
-//             │
-//             │ poll() → gets records
-//             ▼
-//     ListenerContainer
-//             │
-//             │ JacksonJsonMessageConverter
-//             ▼
-//     byte[] → Order / PaymentStatus
-//             │
-//             ├── ✅ Valid record (deserialization SUCCESSFUL)
-//             │       ↓
-//             │   @KafkaListener
-//             │       ↓
-//             │   Business Logic
-//             │
-//             └── ❌❌ Poison Pill ❌❌ (deserialization FAILS)
-//                     ↓
-//                Deserialization Exception
-//                     ↓
-//                DefaultErrorHandler
-//                     ├── Retry
-//                     └── Recover → DLT
-//                              ↓
-//                       Continue to next record
-//                              ↓
-//                       Commit appropriate offset
-
+/*
+     ConcurrentKafkaListenerContainerFactory
+             │ creates
+             ▼
+     ListenerContainer
+             │
+             │ asks ConsumerFactory to create Consumer
+             ▼
+     ConsumerFactory<String, byte[]>
+             │
+             │ provides KafkaConsumer configuration
+             ▼
+     KafkaConsumer<String, byte[]>
+             │
+             │ poll() → gets records
+             ▼
+     ListenerContainer
+             │
+             │ JacksonJsonMessageConverter
+             ▼
+     byte[] → Order / PaymentStatus
+             │
+             ├── ✅ Valid record (deserialization SUCCESSFUL)
+             │       ↓
+             │   @KafkaListener
+             │       ↓
+             │   Business Logic
+             │
+             └── ❌❌ Poison Pill ❌❌ (deserialization FAILS)
+                     ↓
+                Deserialization Exception
+                     ↓
+                DefaultErrorHandler
+                     ├── Retry
+                     └── Recover → DLT
+                              ↓
+                       Continue to next record
+                              ↓
+                       Commit appropriate offset
+*/
 
 //Think of the ListenerContainer as the Spring Kafka manager sitting between your KafkaConsumer and your @KafkaListener method. KafkaConsumer knows how to poll, but it's ListenerContainer which decides what to do with actual result. It's main responsibility are :
 
-//    ListenerContainer
-//        │
-//        ├── 1. Consumer lifecycle
-//        │      ├── Create/start KafkaConsumer
-//        │      ├── Stop/close KafkaConsumer
-//        │      └── Restart when required
-//        │
-//        ├── 2. Polling
-//        │      └── Repeatedly calls consumer.poll()
-//        │
-//        ├── 3. Listener invocation
-//        │      └── Takes ConsumerRecords → calls @KafkaListener method
-//        │
-//        ├── 4. Message conversion
-//        │      └── byte[] → Order / PaymentStatus
-//        │
-//        ├── 5. Error handling
-//        │      ├── Listener exceptions
-//        │      ├── Deserialization/conversion errors
-//        │      └── ErrorHandler / retry mechanisms
-//        │
-//        ├── 6. Offset management
-//        │      └── Commits offsets according to configuration
-//        │
-//        ├── 7. Consumer threading
-//        │      └── Runs consumer/poll loop on its consumer thread
-//        │
-//        ├── 8. Concurrency
-//        │      └── concurrency=N → manages N KafkaConsumers
-//        │
-//        ├── 9. Rebalancing participation
-//        │      └── Coordinates consumer lifecycle around
-//        │          partition assignment/revocation
-//        │
-//        ├── 10. Pause / Resume
-//        │       └── Can pause/resume consumption
-//        │
-//        └── 11. Consumer/container events
-//                └── Publishes events such as partitions assigned/revoked, consumer started/stopped
+/*
+    ListenerContainer
+        │
+        ├── 1. Consumer lifecycle
+        │      ├── Create/start KafkaConsumer
+        │      ├── Stop/close KafkaConsumer
+        │      └── Restart when required
+        │
+        ├── 2. Polling
+        │      └── Repeatedly calls consumer.poll()
+        │
+        ├── 3. Listener invocation
+        │      └── Takes ConsumerRecords → calls @KafkaListener method
+        │
+        ├── 4. Message conversion
+        │      └── byte[] → Order / PaymentStatus
+        │
+        ├── 5. Error handling
+        │      ├── Listener exceptions
+        │      ├── Deserialization/conversion errors
+        │      └── ErrorHandler / retry mechanisms
+        │
+        ├── 6. Offset management
+        │      └── Commits offsets according to configuration
+        │
+        ├── 7. Consumer threading
+        │      └── Runs consumer/poll loop on its consumer thread
+        │
+        ├── 8. Concurrency
+        │      └── concurrency=N → manages N KafkaConsumers
+        │
+        ├── 9. Rebalancing participation
+        │      └── Coordinates consumer lifecycle around
+        │          partition assignment/revocation
+        │
+        ├── 10. Pause / Resume
+        │       └── Can pause/resume consumption
+        │
+        └── 11. Consumer/container events
+                └── Publishes events such as partitions assigned/revoked, consumer started/stopped
+ */

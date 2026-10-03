@@ -1,0 +1,67 @@
+                ┌──────────────────────────────┐                               ┌──────────────────────────────┐
+                │ Order.java - Version1        │                               │ Order.java - Version1        │
+                │                              │                               │                              │
+                │ String orderId;              │                               │ String orderId;              │
+                │ String customerId;           │                               │ String customerId;           │
+                │ int quantity;                │                               │ int quantity;                │
+                │ double totalAmount;          │                               │ double totalAmount;          │
+                └──────────────┬───────────────┘                               └──────────────▲───────────────┘
+                               │                                                              │
+                               ▼                                                              │
+                         ┌────────────┐                                                 ┌────────────┐
+                         │  Producer  │                                                 │  Consumer  │
+                         └─────┬──────┘                                                 └─────▲──────┘
+                               │                                                              │
+                               ▼                                                              │
+                      ┌────────────────┐                      ┌─────────┐             ┌──────────────────┐
+                      │ JSON Serializer│─────── bytes ───────►│  Kafka  │◄──── bytes ─│ JSON Deserializer│
+                      └────────────────┘                      └─────────┘             └──────────────────┘
+
+Till now, this is what we have done and our producer and consumer is working fine. Below are the use-cases where this will fail:
+1. Producer has increased version and now have an extra field say 'double totalAmount' and consumer is on older version where this field is missing. During de-serialisation, Jackson might ignore this, and it might get set to default value.
+2. Producer might refer to v2 where a field has been removed but consumer is still referring to v1 and this might also cause data-loss.
+3. Renaming a field in v2, can cause a silent loss of data.
+4. Change of field type in v2, Jackson might throw exception.
+5. No validation with old consumers of a new consumer wants a different structure and Producer starts producing according to the new required schema.
+
+Solution : schema registry
+Avro, Protobuf, Json Schema
+It brings validation before producer send/publish and event. Provides a formal definition of structure of data.
+
+                 ┌──────────────────────────────┐                              ┌──────────────────────────────┐
+                 │ Order.java - Version1        │                              │ Order.java - Version1        │
+                 │                              │                              │                              │
+                 │ String orderId;              │                              │ String orderId;              │
+                 │ String customerId;           │                              │ String customerId;           │
+                 │ int quantity;                │                              │ int quantity;                │
+                 │ double totalAmount;          │                              │ double totalAmount;          │
+                 └──────────────┬───────────────┘                              └──────────────▲───────────────┘
+                                │                                                             │
+                                ▼                                                             │
+                         ┌────────────┐                                                 ┌────────────┐
+                         │  Producer  │                                                 │  Consumer  │
+                         └─────┬──────┘                                                 └─────▲──────┘
+                               │                                                              │
+                               ▼                                                              │
+                      ┌──────────────────┐                  ┌─────────┐              ┌──────────────────┐
+                      │ Avro Serializer  │────── bytes ───► │  Kafka  │◄──── bytes ──│ Avro Deserializer│
+                      └────────┬─────────┘                  └─────────┘              └────────┬─────────┘
+                               │ Register / Lookup Schema                                     │ Lookup Schema
+                               │                                                              │ using Schema ID
+                               ▼                                                              ▼
+                      ┌──────────────────────────────────────────────────────────────────────────────┐
+                      │                           Schema Registry                                    │
+                      │   Subject                                                                    │
+                      │      ├── Schema V1 ──► Schema ID 1                                           │
+                      │      ├── Schema V2 ──► Schema ID 2                                           │
+                      │      └── Schema V3 ──► Schema ID 3                                           │
+                      │                                                                              │
+                      │   Compatibility Rules                                                        │
+                      │      └── BACKWARD / FORWARD / FULL                                           │
+                      └──────────────────────────────────────────────────────────────────────────────┘
+
+Kafka message conceptually:
+        ┌──────────────┬──────────────────────────────┐
+        │  Schema ID   │       Avro binary data       │
+        │      2       │       serialized Order       │
+        └──────────────┴──────────────────────────────┘
